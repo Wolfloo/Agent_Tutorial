@@ -17,8 +17,10 @@ Action: 你决定采取的行动，必须是以下格式之一:
 Question: {question}
 History: {history}
 """
-from ReAct.helloagent_client import HelloAgentsLLM
-from ReAct.tool import ToolExecutor
+from helloagent_client import HelloAgentsLLM
+from tool import ToolExecutor, search
+from typing import Dict, Any
+import re
 
 
 class ReActAgent:
@@ -55,5 +57,60 @@ class ReActAgent:
             if not response_text:
                 print("错误:LLM未能返回有效响应。")
                 break
+            # (这段逻辑紧随工具调用之后，在 while 循环的末尾)
+            thought, action = self._parse_output(response_text)
+            if thought: print(f"🤔 思考: {thought}")
+            if not action: print("警告：未能解析出有效的Action，流程终止。"); break
+            
+            if action.startswith("Finish"):
+                final_answer = self._parse_action_input(action)
+                print(f"🎉 最终答案: {final_answer}")
+                return final_answer
+            
+            tool_name, tool_input = self._parse_action(action)
+            if not tool_name or not tool_input:
+                self.history.append("Observation: 无效的Action格式，请检查。"); continue
+
+            print(f"🎬 行动: {tool_name}[{tool_input}]")
+            tool_function = self.tool_executor.getTool(tool_name)
+            observation = tool_function(tool_input) if tool_function else f"错误：未找到名为 '{tool_name}' 的工具。"
+            print(f"👀 观察: {observation}")
+            
+            
+            # 将本轮的Action和Observation添加到历史记录中
+            self.history.append(f"Action: {action}")
+            self.history.append(f"Observation: {observation}")
+
+        # 循环结束
+        print("已达到最大步数，流程终止。")
+        return None
 
             # ... (后续的解析、执行、整合步骤)
+    # (这些方法是 ReActAgent 类的一部分)
+    def _parse_output(self, text: str):
+        """解析LLM的输出，提取Thought和Action。"""
+        thought_match = re.search(r"Thought: (.*)", text)
+        action_match = re.search(r"Action: (.*)", text)
+        thought = thought_match.group(1).strip() if thought_match else None
+        action = action_match.group(1).strip() if action_match else None
+        return thought, action
+
+    def _parse_action(self, action_text: str):
+        """解析Action字符串，提取工具名称和输入。"""
+        match = re.match(r"(\w+)\[(.*)\]", action_text)
+        if match:
+            return match.group(1), match.group(2)
+        return None, None
+    
+    def _parse_action_input(self, action_text: str):
+        match = re.match(r"\w+\[(.*)\]", action_text)
+        return match.group(1) if match else ""
+
+if __name__ == '__main__':
+    llm = HelloAgentsLLM()
+    tool_executor = ToolExecutor()
+    search_desc = "一个网页搜索引擎。当你需要回答关于时事、事实以及在你的知识库中找不到的信息时，应使用此工具。"
+    tool_executor.registerTool("Search", search_desc, search)
+    agent = ReActAgent(llm_client=llm, tool_executor=tool_executor)
+    question = "华为最新的手机是哪一款？它的主要卖点是什么？"
+    agent.run(question)
